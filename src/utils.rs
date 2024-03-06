@@ -609,11 +609,19 @@ pub fn exec_timeout(cmd: &mut Command, time_limit: Duration) -> Option<CommandOu
     }
 }
 
+enum RenderTimeMilisecondsVisibility {
+    Hidden,
+    Fractional,
+    Component,
+}
 // Render the time into a nice human-readable string
-pub fn render_time(raw_millis: u128, show_millis: bool) -> String {
-    // Make sure it renders something if the time equals zero instead of an empty string
-    if raw_millis == 0 {
-        return "0ms".into();
+pub fn render_time(raw_millis: u128, show_millis: RenderTimeMilisecondsVisibility) -> String {
+    // Fast returns for zero cases
+    match (raw_millis, show_millis) {
+        (0, Hidden) => return "0s".into(),
+        (1..=999, Hidden) => return "0s".into(),
+        (0, _) => return "0ms".into(),
+        _ => (),
     }
 
     // Calculate a simple breakdown into days/hours/minutes/seconds/milliseconds
@@ -622,25 +630,34 @@ pub fn render_time(raw_millis: u128, show_millis: bool) -> String {
     let (minutes, raw_hours) = (raw_minutes % 60, raw_minutes / 60);
     let (hours, days) = (raw_hours % 24, raw_hours / 24);
 
-    let components = [days, hours, minutes, seconds];
-    let suffixes = ["d", "h", "m", "s"];
+    // Calculate how long the string will be to allocate once in most cases
+    let result_capacity = match raw_millis {
+        1..=59 => 3,
+        60..=3599 => 6,
+        3600..=86399 => 9,
+        _ => 12,
+    } + match (show_millis, include_millis) {
+        (true, false) => 5,
+        (true, true) => 2,
+        _ => 0,
+    };
 
-    let mut rendered_components: Vec<String> = components
+    // Concat components to result, stop at seconds number as that is where it becomes param dependant
+    let result = [(days, "d"), (hours, "h"), (minutes, "m"), (seconds, "")]
         .iter()
-        .zip(&suffixes)
-        .map(render_time_component)
-        .collect();
-    if show_millis || raw_millis < 1000 {
-        rendered_components.push(render_time_component((&millis, &"ms")));
-    }
-    rendered_components.join("")
-}
+        .fold(
+            String::with_capacity(result_capacity),
+            |acc, (component, suffix)| match component {
+                0 if acc.is_empty() => acc,
+                n => acc + &n.to_string() + suffix,
+            },
+        );
 
-/// Render a single component of the time string, giving an empty string if component is zero
-fn render_time_component((component, suffix): (&u128, &&str)) -> String {
-    match component {
-        0 => String::new(),
-        n => format!("{n}{suffix}"),
+    // Append different versions of
+    match (show_millis, include_millis) {
+        (true, true) => result + "." + &(millis / 100).to_string() + "s",
+        (true, false) => result + "s" + &millis.to_string() + "ms",
+        _ => result + "s",
     }
 }
 
@@ -702,28 +719,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_0ms() {
-        assert_eq!(render_time(0_u128, true), "0ms")
+    fn render_time_test_0ms() {
+        assert_eq!(render_time(0_u128, true, false), "0ms")
     }
     #[test]
-    fn test_500ms() {
-        assert_eq!(render_time(500_u128, true), "500ms")
+    fn render_time_test_1ms_hidden() {
+        assert_eq!(render_time(1_u128, false, false), "0ms")
     }
     #[test]
-    fn test_10s() {
-        assert_eq!(render_time(10_000_u128, true), "10s")
+    fn render_time_test_500ms() {
+        assert_eq!(render_time(500_u128, true, false), "500ms")
     }
     #[test]
-    fn test_90s() {
-        assert_eq!(render_time(90_000_u128, true), "1m30s")
+    fn render_time_test_10s() {
+        assert_eq!(render_time(10_000_u128, true, false), "10s0ms")
     }
     #[test]
-    fn test_10110s() {
-        assert_eq!(render_time(10_110_000_u128, true), "2h48m30s")
+    fn render_time_test_90s() {
+        assert_eq!(render_time(90_000_u128, true, false), "1m30s0ms")
     }
     #[test]
-    fn test_1d() {
-        assert_eq!(render_time(86_400_000_u128, true), "1d")
+    fn render_time_test_10110s() {
+        assert_eq!(render_time(10_110_000_u128, true, false), "2h48m30s0ms")
+    }
+    #[test]
+    fn render_time_test_1d() {
+        assert_eq!(render_time(86_400_000_u128, true, false), "1d0h0m0s0ms")
     }
 
     #[test]
